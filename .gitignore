@@ -1,0 +1,13 @@
+.env
+.env.*
+*.pfx
+*.pem
+*.key
+id_rsa*
+credentials*
+*secret*
+*password*
+appsettings.*.json
+node_modules/
+dist/
+build/

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#0f172a">
+<title>FootDelegue</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div id="app">
+  <div class="topbar"><h2>FootDelegue</h2></div>
+
+  <div id="page-accueil" class="page"></div>
+  <div id="page-match" class="page hidden"></div>
+  <div id="page-materiel" class="page hidden"></div>
+  <div id="page-taches" class="page hidden"></div>
+  <div id="page-historique" class="page hidden"></div>
+
+  <div class="bottom-nav">
+    <button data-page="accueil"><span class="icon">🏠</span>Accueil</button>
+    <button data-page="match"><span class="icon">⚽</span>Match</button>
+    <button data-page="materiel"><span class="icon">🎒</span>Matériel</button>
+    <button data-page="taches"><span class="icon">✅</span>Tâches</button>
+    <button data-page="historique"><span class="icon">📋</span>Historique</button>
+  </div>
+</div>
+
+<script src="./app.js"></script>
+</body>
+</html>
