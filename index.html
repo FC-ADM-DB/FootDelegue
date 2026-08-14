@@ -9,8 +9,24 @@
 <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-<div id="app">
-  <div class="topbar"><h2>FootDelegue</h2></div>
+<div id="auth">
+  <h1>FootDelegue</h1>
+  <div class="card">
+    <label>Email</label>
+    <input type="email" id="auth-email" autocomplete="username">
+    <label>Mot de passe</label>
+    <input type="password" id="auth-password" autocomplete="current-password">
+    <p id="auth-error" class="subtitle" style="color:#f87171"></p>
+    <button id="auth-signin" class="primary" style="width:100%;margin-top:10px">Se connecter</button>
+    <button id="auth-signup" class="ghost" style="width:100%;margin-top:10px">Créer un compte</button>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <div class="topbar">
+    <h2>FootDelegue</h2>
+    <button id="btn-logout" class="ghost" style="min-height:36px;padding:0 12px">Déconnexion</button>
+  </div>
 
   <div id="page-accueil" class="page"></div>
   <div id="page-match" class="page hidden"></div>
@@ -27,6 +43,8 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="./config.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

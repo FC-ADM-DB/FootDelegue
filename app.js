@@ -1,24 +1,16 @@
-// FootDelegue — logique applicative (état 100% local pour l'instant, Supabase à brancher plus tard)
+// FootDelegue — logique applicative branchée sur Supabase (auth + base de données partagée)
 
-const STORAGE_KEY = 'footdelegue_state_v1';
 const FORMATS = { '5v5': 5, '8v8': 8 };
 const MATERIEL_DEFAUT = ['Vareuses', 'Gourdes', 'Collation / sandwichs'];
+const AUTOSAVE_MS = 10000;
 
-let state = loadState();
+const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+let state = { teams: [], players: [], matches: [], tasks: [], currentTeamId: null, currentMatchId: null };
 let selectedPlayerId = null; // pour la substitution par sélection + clic
 let tickInterval = null;
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) { /* état corrompu -> on repart propre */ }
-  return { teams: [], players: [], matches: [], tasks: [], currentTeamId: null, currentMatchId: null };
-}
-
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
+let autosaveInterval = null;
+let pendingMatchSave = false;
 
 function uid() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -34,16 +26,114 @@ function currentMatch() {
   return state.matches.find(m => m.id === state.currentMatchId) || null;
 }
 
+// ---------- Authentification ----------
+async function initAuth() {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session) await onLoggedIn();
+  else showAuthScreen();
+
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_IN' && session) onLoggedIn();
+    if (event === 'SIGNED_OUT') showAuthScreen();
+  });
+
+  document.getElementById('auth-signin').addEventListener('click', () => doAuth('signInWithPassword'));
+  document.getElementById('auth-signup').addEventListener('click', () => doAuth('signUp'));
+  document.getElementById('btn-logout').addEventListener('click', () => supabase.auth.signOut());
+}
+
+async function doAuth(method) {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const errEl = document.getElementById('auth-error');
+  errEl.textContent = '';
+  if (!email || !password) { errEl.textContent = 'Email et mot de passe requis.'; return; }
+  const { error } = await supabase.auth[method]({ email, password });
+  if (error) errEl.textContent = error.message;
+  else if (method === 'signUp') errEl.textContent = 'Compte créé. Vérifie tes emails si une confirmation est demandée, puis connecte-toi.';
+}
+
+function showAuthScreen() {
+  document.getElementById('auth').classList.remove('hidden');
+  document.getElementById('app').classList.add('hidden');
+}
+
+async function onLoggedIn() {
+  document.getElementById('auth').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  await loadTeams();
+  showPage('accueil');
+}
+
+// ---------- Chargement depuis Supabase ----------
+async function loadTeams() {
+  const { data, error } = await supabase.from('teams').select('*').order('created_at');
+  if (error) { alert('Erreur de chargement des équipes : ' + error.message); return; }
+  state.teams = data.map(t => ({ id: t.id, name: t.name, format: t.format, materiel: t.materiel || [] }));
+  if (!state.currentTeamId && state.teams.length) state.currentTeamId = state.teams[0].id;
+}
+
+async function loadTeamData(teamId) {
+  const [playersRes, matchesRes, tasksRes] = await Promise.all([
+    supabase.from('players').select('*').eq('team_id', teamId).order('created_at'),
+    supabase.from('matches').select('*').eq('team_id', teamId).order('date'),
+    supabase.from('tasks').select('*').eq('team_id', teamId).order('created_at'),
+  ]);
+  state.players = state.players.filter(p => p.teamId !== teamId).concat(
+    (playersRes.data || []).map(p => ({ id: p.id, teamId: p.team_id, name: p.name }))
+  );
+  state.matches = state.matches.filter(m => m.teamId !== teamId).concat(
+    (matchesRes.data || []).map(rowToMatch)
+  );
+  state.tasks = state.tasks.filter(t => t.teamId !== teamId).concat(
+    (tasksRes.data || []).map(t => ({ id: t.id, teamId: t.team_id, label: t.label, responsable: t.responsable || '', done: t.done }))
+  );
+}
+
+function rowToMatch(row) {
+  const d = row.data || {};
+  return {
+    id: row.id, teamId: row.team_id, opponent: row.opponent, date: row.date, status: row.status,
+    heureRdv: d.heureRdv || '', heureMatch: d.heureMatch || '', lieu: d.lieu || '',
+    maillot: d.maillot || '', meteo: d.meteo || '', contact: d.contact || '',
+    scoreNous: d.scoreNous || 0, scoreEux: d.scoreEux || 0, chronoSec: d.chronoSec || 0,
+    paused: d.paused || false, events: d.events || [], remarkGeneral: d.remarkGeneral || '',
+    playerRemarks: d.playerRemarks || {}, matchPlayers: d.matchPlayers || {},
+  };
+}
+
+function matchToRow(m) {
+  return {
+    id: m.id, team_id: m.teamId, opponent: m.opponent, date: m.date || null, status: m.status,
+    data: {
+      heureRdv: m.heureRdv, heureMatch: m.heureMatch, lieu: m.lieu, maillot: m.maillot,
+      meteo: m.meteo, contact: m.contact, scoreNous: m.scoreNous, scoreEux: m.scoreEux,
+      chronoSec: m.chronoSec, paused: m.paused, events: m.events, remarkGeneral: m.remarkGeneral,
+      playerRemarks: m.playerRemarks, matchPlayers: m.matchPlayers,
+    },
+  };
+}
+
+async function saveMatch(match) {
+  const { error } = await supabase.from('matches').upsert(matchToRow(match));
+  if (error) console.error('Sauvegarde match échouée', error.message);
+}
+async function saveTeamMateriel(team) {
+  const { error } = await supabase.from('teams').update({ materiel: team.materiel }).eq('id', team.id);
+  if (error) console.error('Sauvegarde matériel échouée', error.message);
+}
+
 // ---------- Navigation ----------
 const pages = ['accueil', 'match', 'materiel', 'taches', 'historique'];
 
-function showPage(name) {
+async function showPage(name) {
   pages.forEach(p => {
     document.getElementById('page-' + p).classList.toggle('hidden', p !== name);
   });
   document.querySelectorAll('.bottom-nav button').forEach(b => {
     b.classList.toggle('active', b.dataset.page === name);
   });
+  if (currentTeam() && name !== 'accueil') await loadTeamData(state.currentTeamId);
   render(name);
 }
 
@@ -56,8 +146,10 @@ function render(name) {
 }
 
 // ---------- Accueil : équipes + matchs à venir ----------
-function renderAccueil() {
+async function renderAccueil() {
   const el = document.getElementById('page-accueil');
+  el.innerHTML = '<p class="empty-state">Chargement…</p>';
+  if (state.currentTeamId) await loadTeamData(state.currentTeamId);
   const team = currentTeam();
 
   let html = '<h2>Équipes</h2><div class="card">';
@@ -94,11 +186,11 @@ function renderAccueil() {
     html += '</div><button data-action="new-player" class="ghost" style="width:100%">+ Ajouter un joueur</button>';
 
     html += `<h2 style="margin-top:24px">Matchs — ${escapeHtml(team.name)}</h2><div class="card">`;
-    const matches = state.matches.filter(m => m.teamId === team.id).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    const matches = state.matches.filter(m => m.teamId === team.id && m.status !== 'termine').sort((a, b) => (a.date || '').localeCompare(b.date || ''));
     if (matches.length === 0) {
       html += '<p class="empty-state">Aucun match programmé.</p>';
     } else {
-      matches.filter(m => m.status !== 'termine').forEach(m => {
+      matches.forEach(m => {
         html += `<div class="row">
           <div class="row-main">
             <div class="title">${escapeHtml(m.opponent || 'Adversaire ?')}</div>
@@ -252,7 +344,7 @@ function onPlayerChipClick(playerId, match) {
   }
   swapPlayers(match, selectedPlayerId, playerId);
   selectedPlayerId = null;
-  saveState();
+  saveMatch(match);
   renderMatch();
 }
 
@@ -310,7 +402,7 @@ function renderMateriel() {
   const el = document.getElementById('page-materiel');
   const team = currentTeam();
   if (!team) { el.innerHTML = '<p class="empty-state">Choisis une équipe depuis l\'accueil.</p>'; return; }
-  if (!team.materiel) team.materiel = MATERIEL_DEFAUT.map(label => ({ id: uid(), label, responsable: '', done: false }));
+  if (!team.materiel || !team.materiel.length) team.materiel = MATERIEL_DEFAUT.map(label => ({ id: uid(), label, responsable: '', done: false }));
 
   let html = `<h2>Matériel — ${escapeHtml(team.name)}</h2><div class="card list-table">`;
   team.materiel.forEach(item => {
@@ -470,14 +562,15 @@ function newTeamModal() {
       <option value="5v5">5 contre 5</option>
       <option value="8v8">8 contre 8</option>
     </select>
-  `, (overlay) => {
+  `, async (overlay) => {
     const name = overlay.querySelector('#m-team-name').value.trim();
     if (!name) return;
     const format = overlay.querySelector('#m-team-format').value;
-    const team = { id: uid(), name, format, materiel: MATERIEL_DEFAUT.map(label => ({ id: uid(), label, responsable: '', done: false })) };
-    state.teams.push(team);
-    state.currentTeamId = team.id;
-    saveState();
+    const materiel = MATERIEL_DEFAUT.map(label => ({ id: uid(), label, responsable: '', done: false }));
+    const { data, error } = await supabase.from('teams').insert({ name, format, materiel }).select().single();
+    if (error) { alert('Erreur : ' + error.message); return; }
+    state.teams.push({ id: data.id, name: data.name, format: data.format, materiel: data.materiel });
+    state.currentTeamId = data.id;
     showPage('accueil');
   });
 }
@@ -486,11 +579,12 @@ function newPlayerModal() {
   openModal('Nouveau joueur', `
     <label>Nom du joueur</label>
     <input type="text" id="m-player-name" placeholder="Prénom Nom">
-  `, (overlay) => {
+  `, async (overlay) => {
     const name = overlay.querySelector('#m-player-name').value.trim();
     if (!name) return;
-    state.players.push({ id: uid(), teamId: state.currentTeamId, name });
-    saveState();
+    const { data, error } = await supabase.from('players').insert({ team_id: state.currentTeamId, name }).select().single();
+    if (error) { alert('Erreur : ' + error.message); return; }
+    state.players.push({ id: data.id, teamId: data.team_id, name: data.name });
     showPage('accueil');
   });
 }
@@ -501,7 +595,7 @@ function newMatchModal() {
     <input type="text" id="m-match-opp" placeholder="Nom de l'équipe adverse">
     <label>Date</label>
     <input type="date" id="m-match-date">
-  `, (overlay) => {
+  `, async (overlay) => {
     const opponent = overlay.querySelector('#m-match-opp').value.trim();
     const date = overlay.querySelector('#m-match-date').value;
     const match = {
@@ -510,9 +604,10 @@ function newMatchModal() {
       status: 'prevu', scoreNous: 0, scoreEux: 0, chronoSec: 0, paused: false,
       events: [], remarkGeneral: '', playerRemarks: {}, matchPlayers: {}
     };
+    const { error } = await supabase.from('matches').insert(matchToRow(match));
+    if (error) { alert('Erreur : ' + error.message); return; }
     state.matches.push(match);
     state.currentMatchId = match.id;
-    saveState();
     showPage('match');
   });
 }
@@ -528,7 +623,7 @@ function startMatchModal(match) {
         ${escapeHtml(p.name)}
       </label>`).join('')}
     </div>`;
-  openModal('Composition de départ', fieldsHtml, (overlay) => {
+  openModal('Composition de départ', fieldsHtml, async (overlay) => {
     const checked = [...overlay.querySelectorAll('[data-lineup]:checked')].map(i => i.dataset.lineup);
     players.forEach(p => {
       match.matchPlayers[p.id] = {
@@ -537,7 +632,7 @@ function startMatchModal(match) {
       };
     });
     match.status = 'en_cours';
-    saveState();
+    await saveMatch(match);
     startTicking();
     showPage('match');
   });
@@ -551,34 +646,45 @@ function startTicking() {
     if (!match || match.status !== 'en_cours' || match.paused) return;
     match.chronoSec = (match.chronoSec || 0) + 1;
     Object.values(match.matchPlayers).forEach(mp => { mp.currentStintSec++; });
-    saveState();
+    pendingMatchSave = true;
     if (!document.getElementById('page-match').classList.contains('hidden')) renderMatch();
   }, 1000);
+  autosaveInterval = setInterval(() => {
+    const match = currentMatch();
+    if (match && pendingMatchSave) { saveMatch(match); pendingMatchSave = false; }
+  }, AUTOSAVE_MS);
 }
 function stopTicking() {
   if (tickInterval) clearInterval(tickInterval);
+  if (autosaveInterval) clearInterval(autosaveInterval);
   tickInterval = null;
+  autosaveInterval = null;
 }
 
 // ---------- Délégation d'événements ----------
-document.addEventListener('click', (e) => {
+document.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const action = btn.dataset.action;
   const id = btn.dataset.id;
 
-  if (action === 'select-team') { state.currentTeamId = id; saveState(); renderAccueil(); }
+  if (action === 'select-team') { state.currentTeamId = id; renderAccueil(); }
   if (action === 'new-team') newTeamModal();
   if (action === 'new-player') newPlayerModal();
   if (action === 'remove-player') {
-    if (confirm('Retirer ce joueur ?')) { state.players = state.players.filter(p => p.id !== id); saveState(); renderAccueil(); }
+    if (confirm('Retirer ce joueur ?')) {
+      const { error } = await supabase.from('players').delete().eq('id', id);
+      if (error) { alert('Erreur : ' + error.message); return; }
+      state.players = state.players.filter(p => p.id !== id);
+      renderAccueil();
+    }
   }
   if (action === 'new-match') newMatchModal();
-  if (action === 'open-match') { state.currentMatchId = id; saveState(); showPage('match'); }
+  if (action === 'open-match') { state.currentMatchId = id; showPage('match'); }
   if (action === 'start-match') startMatchModal(currentMatch());
-  if (action === 'but-nous') { currentMatch().scoreNous++; saveState(); renderMatch(); }
-  if (action === 'but-eux') { currentMatch().scoreEux++; saveState(); renderMatch(); }
-  if (action === 'toggle-pause') { currentMatch().paused = !currentMatch().paused; saveState(); renderMatch(); }
+  if (action === 'but-nous') { const m = currentMatch(); m.scoreNous++; await saveMatch(m); renderMatch(); }
+  if (action === 'but-eux') { const m = currentMatch(); m.scoreEux++; await saveMatch(m); renderMatch(); }
+  if (action === 'toggle-pause') { const m = currentMatch(); m.paused = !m.paused; await saveMatch(m); renderMatch(); }
   if (action === 'end-match') {
     if (confirm('Terminer le match ?')) {
       const m = currentMatch();
@@ -588,57 +694,70 @@ document.addEventListener('click', (e) => {
       });
       m.status = 'termine';
       stopTicking();
-      saveState();
+      await saveMatch(m);
       renderMatch();
     }
   }
   if (action === 'export-match') exportMatch(id);
   if (action === 'add-materiel') {
-    currentTeam().materiel.push({ id: uid(), label: 'Nouvel élément', responsable: '', done: false });
-    saveState(); renderMateriel();
+    const team = currentTeam();
+    team.materiel.push({ id: uid(), label: 'Nouvel élément', responsable: '', done: false });
+    await saveTeamMateriel(team);
+    renderMateriel();
   }
   if (action === 'remove-materiel') {
     const team = currentTeam();
     team.materiel = team.materiel.filter(m => m.id !== id);
-    saveState(); renderMateriel();
+    await saveTeamMateriel(team);
+    renderMateriel();
   }
   if (action === 'add-task') {
-    state.tasks.push({ id: uid(), teamId: state.currentTeamId, label: 'Nouvelle tâche', responsable: '', done: false });
-    saveState(); renderTaches();
+    const { data, error } = await supabase.from('tasks').insert({ team_id: state.currentTeamId, label: 'Nouvelle tâche', responsable: '', done: false }).select().single();
+    if (error) { alert('Erreur : ' + error.message); return; }
+    state.tasks.push({ id: data.id, teamId: data.team_id, label: data.label, responsable: data.responsable, done: data.done });
+    renderTaches();
   }
-  if (action === 'remove-task') { state.tasks = state.tasks.filter(t => t.id !== id); saveState(); renderTaches(); }
+  if (action === 'remove-task') {
+    const { error } = await supabase.from('tasks').delete().eq('id', id);
+    if (error) { alert('Erreur : ' + error.message); return; }
+    state.tasks = state.tasks.filter(t => t.id !== id);
+    renderTaches();
+  }
   if (action === 'toggle-task') {
     const t = state.tasks.find(t => t.id === id);
-    t.done = !t.done; saveState(); renderTaches();
+    t.done = !t.done;
+    await supabase.from('tasks').update({ done: t.done }).eq('id', id);
+    renderTaches();
   }
 });
 
-document.addEventListener('change', (e) => {
+document.addEventListener('change', async (e) => {
   const t = e.target;
   const match = currentMatch();
 
   if (t.dataset.field && match) {
     match[t.dataset.field] = t.value;
-    saveState();
+    await saveMatch(match);
   }
   if (t.dataset.playerRemark && match) {
     match.playerRemarks[t.dataset.playerRemark] = t.value;
-    saveState();
+    await saveMatch(match);
   }
-  if (t.dataset.materielLabel) { updateMateriel(t.dataset.materielLabel, 'label', t.value); }
-  if (t.dataset.materielResp) { updateMateriel(t.dataset.materielResp, 'responsable', t.value); }
-  if (t.dataset.materielDone) { updateMateriel(t.dataset.materielDone, 'done', t.checked); }
-  if (t.dataset.taskLabel) { updateTask(t.dataset.taskLabel, 'label', t.value); }
-  if (t.dataset.taskResp) { updateTask(t.dataset.taskResp, 'responsable', t.value); }
+  if (t.dataset.materielLabel) { await updateMateriel(t.dataset.materielLabel, 'label', t.value); }
+  if (t.dataset.materielResp) { await updateMateriel(t.dataset.materielResp, 'responsable', t.value); }
+  if (t.dataset.materielDone) { await updateMateriel(t.dataset.materielDone, 'done', t.checked); }
+  if (t.dataset.taskLabel) { await updateTask(t.dataset.taskLabel, 'label', t.value); }
+  if (t.dataset.taskResp) { await updateTask(t.dataset.taskResp, 'responsable', t.value); }
 });
 
-function updateMateriel(id, field, value) {
-  const item = currentTeam().materiel.find(m => m.id === id);
-  if (item) { item[field] = value; saveState(); }
+async function updateMateriel(id, field, value) {
+  const team = currentTeam();
+  const item = team.materiel.find(m => m.id === id);
+  if (item) { item[field] = value; await saveTeamMateriel(team); }
 }
-function updateTask(id, field, value) {
+async function updateTask(id, field, value) {
   const t = state.tasks.find(t => t.id === id);
-  if (t) { t[field] = value; saveState(); }
+  if (t) { t[field] = value; await supabase.from('tasks').update({ [field]: value }).eq('id', id); }
 }
 
 document.querySelectorAll('.bottom-nav button[data-page]').forEach(btn => {
@@ -650,5 +769,4 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
 }
 
-if (currentMatch()?.status === 'en_cours') startTicking();
-showPage('accueil');
+initAuth();
