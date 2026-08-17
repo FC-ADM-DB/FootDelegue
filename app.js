@@ -4,6 +4,14 @@ const FORMATS = { '5v5': 5, '8v8': 8 };
 const MATERIEL_DEFAUT = ['Vareuses', 'Gourdes', 'Collation / sandwichs'];
 const AUTOSAVE_MS = 10000;
 
+function showFatalError(message) {
+  const el = document.getElementById('auth-error');
+  if (el) el.textContent = 'Erreur technique : ' + message;
+}
+window.addEventListener('error', (e) => showFatalError(e.message));
+window.addEventListener('unhandledrejection', (e) => showFatalError(e.reason?.message || String(e.reason)));
+
+if (!window.supabase) showFatalError("la bibliothèque Supabase n'a pas pu se charger (vendor/supabase.js).");
 const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
 let state = { teams: [], players: [], matches: [], tasks: [], currentTeamId: null, currentMatchId: null };
