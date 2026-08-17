@@ -1,3 +1,4 @@
+// Fichier source : integre directement dans index.html (voir build.sh)
 // Config Supabase.
 // Ces deux valeurs sont faites pour être visibles dans le navigateur (ce sont
 // des identifiants publics, pas des mots de passe) : la vraie protection des

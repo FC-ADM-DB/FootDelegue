@@ -1,3 +1,6 @@
+// Fichier source : ce code est integre directement dans index.html (voir build.sh)
+// pour eviter les soucis de chargement de fichiers externes rencontres sur certains
+// reseaux/navigateurs. Modifier ici puis relancer build.sh pour republier.
 // FootDelegue — logique applicative branchée sur Supabase (auth + base de données partagée)
 
 const FORMATS = { '5v5': 5, '8v8': 8 };
@@ -11,8 +14,8 @@ function showFatalError(message) {
 window.addEventListener('error', (e) => showFatalError(e.message));
 window.addEventListener('unhandledrejection', (e) => showFatalError(e.reason?.message || String(e.reason)));
 
-if (!window.supabase) showFatalError("la bibliothèque Supabase n'a pas pu se charger (vendor/supabase.js).");
-const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+if (!window.supabase) showFatalError("la bibliothèque Supabase n'a pas pu se charger.");
+const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
 function withTimeout(promise, ms, label) {
   return Promise.race([
@@ -52,16 +55,16 @@ function initAuth() {
   // Les boutons sont rendus cliquables tout de suite, sans attendre le réseau.
   document.getElementById('auth-signin').addEventListener('click', () => doAuth('signInWithPassword'));
   document.getElementById('auth-signup').addEventListener('click', () => doAuth('signUp'));
-  document.getElementById('btn-logout').addEventListener('click', () => supabase.auth.signOut());
+  document.getElementById('btn-logout').addEventListener('click', () => sb.auth.signOut());
 
-  supabase.auth.onAuthStateChange((event, session) => {
+  sb.auth.onAuthStateChange((event, session) => {
     dlog('changement de session : ' + event);
     if (event === 'SIGNED_IN' && session) onLoggedIn();
     if (event === 'SIGNED_OUT') showAuthScreen();
   });
 
   dlog('verification d\'une session existante...');
-  withTimeout(supabase.auth.getSession(), 12000, 'Vérification de session')
+  withTimeout(sb.auth.getSession(), 12000, 'Vérification de session')
     .then(({ data: { session } }) => {
       dlog('session verifiee : ' + (session ? 'connecte' : 'aucune'));
       if (session) onLoggedIn(); else showAuthScreen();
@@ -77,7 +80,7 @@ async function doAuth(method) {
   dlog((method === 'signUp' ? 'creation de compte' : 'connexion') + ' en cours pour ' + email);
   if (!email || !password) { errEl.textContent = 'Email et mot de passe requis.'; return; }
   try {
-    const { error } = await withTimeout(supabase.auth[method]({ email, password }), 15000, 'Requête');
+    const { error } = await withTimeout(sb.auth[method]({ email, password }), 15000, 'Requête');
     if (error) { dlog('reponse avec erreur : ' + error.message); errEl.textContent = error.message; }
     else if (method === 'signUp') { dlog('compte cree'); errEl.textContent = 'Compte créé. Vérifie tes emails si une confirmation est demandée, puis connecte-toi.'; }
     else dlog('connexion reussie');
@@ -101,7 +104,7 @@ async function onLoggedIn() {
 
 // ---------- Chargement depuis Supabase ----------
 async function loadTeams() {
-  const { data, error } = await supabase.from('teams').select('*').order('created_at');
+  const { data, error } = await sb.from('teams').select('*').order('created_at');
   if (error) { alert('Erreur de chargement des équipes : ' + error.message); return; }
   state.teams = data.map(t => ({ id: t.id, name: t.name, format: t.format, materiel: t.materiel || [] }));
   if (!state.currentTeamId && state.teams.length) state.currentTeamId = state.teams[0].id;
@@ -109,9 +112,9 @@ async function loadTeams() {
 
 async function loadTeamData(teamId) {
   const [playersRes, matchesRes, tasksRes] = await Promise.all([
-    supabase.from('players').select('*').eq('team_id', teamId).order('created_at'),
-    supabase.from('matches').select('*').eq('team_id', teamId).order('date'),
-    supabase.from('tasks').select('*').eq('team_id', teamId).order('created_at'),
+    sb.from('players').select('*').eq('team_id', teamId).order('created_at'),
+    sb.from('matches').select('*').eq('team_id', teamId).order('date'),
+    sb.from('tasks').select('*').eq('team_id', teamId).order('created_at'),
   ]);
   state.players = state.players.filter(p => p.teamId !== teamId).concat(
     (playersRes.data || []).map(p => ({ id: p.id, teamId: p.team_id, name: p.name }))
@@ -149,11 +152,11 @@ function matchToRow(m) {
 }
 
 async function saveMatch(match) {
-  const { error } = await supabase.from('matches').upsert(matchToRow(match));
+  const { error } = await sb.from('matches').upsert(matchToRow(match));
   if (error) console.error('Sauvegarde match échouée', error.message);
 }
 async function saveTeamMateriel(team) {
-  const { error } = await supabase.from('teams').update({ materiel: team.materiel }).eq('id', team.id);
+  const { error } = await sb.from('teams').update({ materiel: team.materiel }).eq('id', team.id);
   if (error) console.error('Sauvegarde matériel échouée', error.message);
 }
 
@@ -601,7 +604,7 @@ function newTeamModal() {
     if (!name) return;
     const format = overlay.querySelector('#m-team-format').value;
     const materiel = MATERIEL_DEFAUT.map(label => ({ id: uid(), label, responsable: '', done: false }));
-    const { data, error } = await supabase.from('teams').insert({ name, format, materiel }).select().single();
+    const { data, error } = await sb.from('teams').insert({ name, format, materiel }).select().single();
     if (error) { alert('Erreur : ' + error.message); return; }
     state.teams.push({ id: data.id, name: data.name, format: data.format, materiel: data.materiel });
     state.currentTeamId = data.id;
@@ -616,7 +619,7 @@ function newPlayerModal() {
   `, async (overlay) => {
     const name = overlay.querySelector('#m-player-name').value.trim();
     if (!name) return;
-    const { data, error } = await supabase.from('players').insert({ team_id: state.currentTeamId, name }).select().single();
+    const { data, error } = await sb.from('players').insert({ team_id: state.currentTeamId, name }).select().single();
     if (error) { alert('Erreur : ' + error.message); return; }
     state.players.push({ id: data.id, teamId: data.team_id, name: data.name });
     showPage('accueil');
@@ -638,7 +641,7 @@ function newMatchModal() {
       status: 'prevu', scoreNous: 0, scoreEux: 0, chronoSec: 0, paused: false,
       events: [], remarkGeneral: '', playerRemarks: {}, matchPlayers: {}
     };
-    const { error } = await supabase.from('matches').insert(matchToRow(match));
+    const { error } = await sb.from('matches').insert(matchToRow(match));
     if (error) { alert('Erreur : ' + error.message); return; }
     state.matches.push(match);
     state.currentMatchId = match.id;
@@ -707,7 +710,7 @@ document.addEventListener('click', async (e) => {
   if (action === 'new-player') newPlayerModal();
   if (action === 'remove-player') {
     if (confirm('Retirer ce joueur ?')) {
-      const { error } = await supabase.from('players').delete().eq('id', id);
+      const { error } = await sb.from('players').delete().eq('id', id);
       if (error) { alert('Erreur : ' + error.message); return; }
       state.players = state.players.filter(p => p.id !== id);
       renderAccueil();
@@ -746,13 +749,13 @@ document.addEventListener('click', async (e) => {
     renderMateriel();
   }
   if (action === 'add-task') {
-    const { data, error } = await supabase.from('tasks').insert({ team_id: state.currentTeamId, label: 'Nouvelle tâche', responsable: '', done: false }).select().single();
+    const { data, error } = await sb.from('tasks').insert({ team_id: state.currentTeamId, label: 'Nouvelle tâche', responsable: '', done: false }).select().single();
     if (error) { alert('Erreur : ' + error.message); return; }
     state.tasks.push({ id: data.id, teamId: data.team_id, label: data.label, responsable: data.responsable, done: data.done });
     renderTaches();
   }
   if (action === 'remove-task') {
-    const { error } = await supabase.from('tasks').delete().eq('id', id);
+    const { error } = await sb.from('tasks').delete().eq('id', id);
     if (error) { alert('Erreur : ' + error.message); return; }
     state.tasks = state.tasks.filter(t => t.id !== id);
     renderTaches();
@@ -760,7 +763,7 @@ document.addEventListener('click', async (e) => {
   if (action === 'toggle-task') {
     const t = state.tasks.find(t => t.id === id);
     t.done = !t.done;
-    await supabase.from('tasks').update({ done: t.done }).eq('id', id);
+    await sb.from('tasks').update({ done: t.done }).eq('id', id);
     renderTaches();
   }
 });
@@ -791,7 +794,7 @@ async function updateMateriel(id, field, value) {
 }
 async function updateTask(id, field, value) {
   const t = state.tasks.find(t => t.id === id);
-  if (t) { t[field] = value; await supabase.from('tasks').update({ [field]: value }).eq('id', id); }
+  if (t) { t[field] = value; await sb.from('tasks').update({ [field]: value }).eq('id', id); }
 }
 
 document.querySelectorAll('.bottom-nav button[data-page]').forEach(btn => {
