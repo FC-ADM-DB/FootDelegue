@@ -14,6 +14,13 @@ window.addEventListener('unhandledrejection', (e) => showFatalError(e.reason?.me
 if (!window.supabase) showFatalError("la bibliothèque Supabase n'a pas pu se charger (vendor/supabase.js).");
 const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} : pas de réponse après ${ms / 1000}s (problème réseau probable)`)), ms)),
+  ]);
+}
+
 let state = { teams: [], players: [], matches: [], tasks: [], currentTeamId: null, currentMatchId: null };
 let selectedPlayerId = null; // pour la substitution par sélection + clic
 let tickInterval = null;
@@ -35,19 +42,31 @@ function currentMatch() {
 }
 
 // ---------- Authentification ----------
-async function initAuth() {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (session) await onLoggedIn();
-  else showAuthScreen();
+function dlog(msg) {
+  const el = document.getElementById('debug-log');
+  if (el) el.textContent += new Date().toLocaleTimeString() + ' — ' + msg + '\n';
+}
+
+function initAuth() {
+  dlog('initAuth: attache les boutons');
+  // Les boutons sont rendus cliquables tout de suite, sans attendre le réseau.
+  document.getElementById('auth-signin').addEventListener('click', () => doAuth('signInWithPassword'));
+  document.getElementById('auth-signup').addEventListener('click', () => doAuth('signUp'));
+  document.getElementById('btn-logout').addEventListener('click', () => supabase.auth.signOut());
 
   supabase.auth.onAuthStateChange((event, session) => {
+    dlog('changement de session : ' + event);
     if (event === 'SIGNED_IN' && session) onLoggedIn();
     if (event === 'SIGNED_OUT') showAuthScreen();
   });
 
-  document.getElementById('auth-signin').addEventListener('click', () => doAuth('signInWithPassword'));
-  document.getElementById('auth-signup').addEventListener('click', () => doAuth('signUp'));
-  document.getElementById('btn-logout').addEventListener('click', () => supabase.auth.signOut());
+  dlog('verification d\'une session existante...');
+  withTimeout(supabase.auth.getSession(), 12000, 'Vérification de session')
+    .then(({ data: { session } }) => {
+      dlog('session verifiee : ' + (session ? 'connecte' : 'aucune'));
+      if (session) onLoggedIn(); else showAuthScreen();
+    })
+    .catch((err) => { dlog('erreur session : ' + err.message); showAuthScreen(); });
 }
 
 async function doAuth(method) {
@@ -55,10 +74,17 @@ async function doAuth(method) {
   const password = document.getElementById('auth-password').value;
   const errEl = document.getElementById('auth-error');
   errEl.textContent = '';
+  dlog((method === 'signUp' ? 'creation de compte' : 'connexion') + ' en cours pour ' + email);
   if (!email || !password) { errEl.textContent = 'Email et mot de passe requis.'; return; }
-  const { error } = await supabase.auth[method]({ email, password });
-  if (error) errEl.textContent = error.message;
-  else if (method === 'signUp') errEl.textContent = 'Compte créé. Vérifie tes emails si une confirmation est demandée, puis connecte-toi.';
+  try {
+    const { error } = await withTimeout(supabase.auth[method]({ email, password }), 15000, 'Requête');
+    if (error) { dlog('reponse avec erreur : ' + error.message); errEl.textContent = error.message; }
+    else if (method === 'signUp') { dlog('compte cree'); errEl.textContent = 'Compte créé. Vérifie tes emails si une confirmation est demandée, puis connecte-toi.'; }
+    else dlog('connexion reussie');
+  } catch (err) {
+    dlog('exception : ' + err.message);
+    errEl.textContent = err.message;
+  }
 }
 
 function showAuthScreen() {
