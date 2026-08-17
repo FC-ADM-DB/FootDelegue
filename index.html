@@ -282,6 +282,8 @@ async function renderAccueil() {
         <button data-action="select-team" data-id="${t.id}" class="${t.id === state.currentTeamId ? 'primary' : 'ghost'}">
           ${t.id === state.currentTeamId ? 'Active' : 'Choisir'}
         </button>
+        <button data-action="rename-team" data-id="${t.id}" class="ghost">Renommer</button>
+        <button data-action="delete-team" data-id="${t.id}" class="ghost">Supprimer</button>
       </div>`;
     });
   }
@@ -692,6 +694,21 @@ function newTeamModal() {
   });
 }
 
+function renameTeamModal(teamId) {
+  const team = state.teams.find(t => t.id === teamId);
+  openModal('Renommer l\'équipe', `
+    <label>Nom de l'équipe</label>
+    <input type="text" id="m-team-rename" value="${escapeAttr(team.name)}">
+  `, async (overlay) => {
+    const name = overlay.querySelector('#m-team-rename').value.trim();
+    if (!name) return;
+    const { error } = await sb.from('teams').update({ name }).eq('id', teamId);
+    if (error) { alert('Erreur : ' + error.message); return; }
+    team.name = name;
+    renderAccueil();
+  });
+}
+
 function newPlayerModal() {
   openModal('Nouveau joueur', `
     <label>Nom du joueur</label>
@@ -715,14 +732,17 @@ function newMatchModal() {
   `, async (overlay) => {
     const opponent = overlay.querySelector('#m-match-opp').value.trim();
     const date = overlay.querySelector('#m-match-date').value;
-    const match = {
-      id: uid(), teamId: state.currentTeamId, opponent, date,
+    const draft = {
+      teamId: state.currentTeamId, opponent, date,
       heureRdv: '', heureMatch: '', lieu: '', maillot: '', meteo: '', contact: '',
       status: 'prevu', scoreNous: 0, scoreEux: 0, chronoSec: 0, paused: false,
       events: [], remarkGeneral: '', playerRemarks: {}, matchPlayers: {}
     };
-    const { error } = await sb.from('matches').insert(matchToRow(match));
+    const row = matchToRow(draft);
+    delete row.id; // laisse la base de données générer l'identifiant
+    const { data, error } = await sb.from('matches').insert(row).select().single();
     if (error) { alert('Erreur : ' + error.message); return; }
+    const match = rowToMatch(data);
     state.matches.push(match);
     state.currentMatchId = match.id;
     showPage('match');
@@ -787,6 +807,20 @@ document.addEventListener('click', async (e) => {
 
   if (action === 'select-team') { state.currentTeamId = id; renderAccueil(); }
   if (action === 'new-team') newTeamModal();
+  if (action === 'rename-team') renameTeamModal(id);
+  if (action === 'delete-team') {
+    const team = state.teams.find(t => t.id === id);
+    if (confirm(`Supprimer l'équipe "${team.name}" ? Ses joueurs, matchs et tâches seront aussi supprimés.`)) {
+      const { error } = await sb.from('teams').delete().eq('id', id);
+      if (error) { alert('Erreur : ' + error.message); return; }
+      state.teams = state.teams.filter(t => t.id !== id);
+      state.players = state.players.filter(p => p.teamId !== id);
+      state.matches = state.matches.filter(m => m.teamId !== id);
+      state.tasks = state.tasks.filter(t => t.teamId !== id);
+      if (state.currentTeamId === id) state.currentTeamId = state.teams[0]?.id || null;
+      renderAccueil();
+    }
+  }
   if (action === 'new-player') newPlayerModal();
   if (action === 'remove-player') {
     if (confirm('Retirer ce joueur ?')) {
